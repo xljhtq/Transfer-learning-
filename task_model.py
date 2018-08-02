@@ -1,6 +1,7 @@
 ## encoding=utf8
 import tensorflow as tf
 from tensorflow.python.framework import ops
+from tensorflow.python.ops import variable_scope as vs
 
 
 class Base_model(object):
@@ -14,14 +15,28 @@ class Base_model(object):
                  fix_word_vec=True,
                  word_vocab=None,
                  l2_reg_lambda=0.0,
-                 adv=True):
+                 adv=True,
+                 diff=True,
+                 sharedTag=True):
         self.input_left = tf.placeholder(tf.int32, [None, max_len], name="input_left")
         self.input_right = tf.placeholder(tf.int32, [None, max_len], name="input_right")
         self.dropout_keep_prob = tf.placeholder(tf.float32, name="dropout_keep_prob")
+        self.input_y = tf.placeholder(tf.float32, [None, 2], name="input_y")
+        self.input_task = tf.placeholder(tf.int32, name="input_task")
         print("input_left", self.input_left.name)
         print("input_right", self.input_right.name)
         print("dropout_keep_prob", self.dropout_keep_prob.name)
+        print ("input_y", self.input_y.name)
+        print ("input_task", self.input_task.name)
 
+        self.one_hot_input_task = tf.reshape(tf.one_hot(self.input_task, 2, axis=-1),
+                                             shape=[1, 2])
+        medium = tf.slice(self.input_y, begin=[0, 0], size=[-1, 1])
+        self.one_hot_input_task = tf.matmul(tf.fill(tf.shape(medium), 1.0),
+                                            self.one_hot_input_task)
+
+        self.sharedTag = sharedTag
+        self.diff = diff
         self.adv = adv
         self.embedding_size = embedding_size
         self.vocab_size = vocab_size
@@ -37,59 +52,109 @@ class Base_model(object):
                                                                                self.word_vocab,
                                                                                self.vocab_size)
 
-    def func(self):
+    def func_shared(self):
         self.shared_out = self.extractLayer()
         print("base_model shared_out: ", self.shared_out.name)
 
-    # def extractLayer(self):
-    #     pooled_outputs_left, pooled_outputs_right = self.convLayer()
-    #     self.num_filters_total = self.num_filters * len(self.filter_sizes)
-    #     h_pool_left = tf.reshape(tf.concat(axis=3, values=pooled_outputs_left), [-1, self.num_filters_total],
-    #                              name='h_pool_left')
-    #     h_pool_right = tf.reshape(tf.concat(axis=3, values=pooled_outputs_right), [-1, self.num_filters_total],
-    #                               name='h_pool_right')
-    #
-    #     with tf.name_scope("similarity"):
-    #         W = tf.Variable(tf.truncated_normal([self.num_filters_total, self.num_filters_total], stddev=0.1),
-    #                         name="W")
-    #         # W = tf.get_variable("W",
-    #         #                     shape=[self.num_filters_total, self.num_filters_total],
-    #         #                     initializer=tf.contrib.layers.xavier_initializer())
-    #         transform_left = tf.matmul(h_pool_left, W)
-    #         sims = tf.reduce_sum(tf.multiply(transform_left, h_pool_right), 1, keep_dims=True)
-    #         print(sims.name)
-    #
-    #     extract_output = tf.concat(axis=1, values=[h_pool_left, sims, h_pool_right], name='new_input')
-    #     return extract_output
-    #
-    # def convLayer(self):
-    #     pooled_outputs_left = []
-    #     pooled_outputs_right = []
-    #     for i, filter_size in enumerate(self.filter_sizes):
-    #         filter_shape = [filter_size, self.embedding_size, 1, self.num_filters]
-    #         W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1),
-    #                         name="W-%s" % filter_size)
-    #         b = tf.Variable(tf.constant(0.1, shape=[self.num_filters]), name="b-%s" % filter_size)
-    #         with tf.name_scope("conv-maxpool-left-%s" % filter_size):
-    #             conv = tf.nn.conv2d(self.embedded_chars_left, W, strides=[1, 1, 1, 1], padding="VALID", name="conv")
-    #             h = self.leaky_relu(tf.nn.bias_add(conv, b))  # conv: [batch_size, 20-2+1, 1, out_channels]
-    #             pooled = tf.nn.max_pool(h,
-    #                                     ksize=[1, self.max_len - filter_size + 1, 1, 1],
-    #                                     strides=[1, 1, 1, 1],
-    #                                     padding='VALID',
-    #                                     name="pool")  # pooled: [batch_size, 1, 1, out_channels]
-    #             pooled_outputs_left.append(pooled)
-    #         with tf.name_scope("conv-maxpool-right-%s" % filter_size):
-    #             conv = tf.nn.conv2d(self.embedded_chars_right, W, strides=[1, 1, 1, 1], padding="VALID", name="conv")
-    #             h = self.leaky_relu(tf.nn.bias_add(conv, b))
-    #             pooled = tf.nn.max_pool(h,
-    #                                     ksize=[1, self.max_len - filter_size + 1, 1, 1],
-    #                                     strides=[1, 1, 1, 1],
-    #                                     padding='VALID',
-    #                                     name="pool")
-    #             pooled_outputs_right.append(pooled)
-    #     print(W.name)
-    #     return pooled_outputs_left, pooled_outputs_right
+    def func_adv(self):
+        if self.adv:
+            print ("has loss_adv")
+            self.loss_adv, self.l2_loss_adv = self.adversarial_loss()
+        else:
+            print ("no loss_adv")
+            self.loss_adv, self.l2_loss_adv = 0, 0
+
+    def adversarial_loss(self):
+        shared_out = flip_gradient(self.shared_out)
+        specfic_feature, l2_loss_hidden = self.hidden_layer(x=shared_out,
+                                                            input_size=2 * self.num_filters_total + 1,
+                                                            output_size=self.num_hidden)
+
+        specfic_feature = tf.nn.dropout(specfic_feature, self.dropout_keep_prob, name="dropout")
+        logits, l2_loss = self.linearLayer(specfic_feature,
+                                           self.num_hidden,
+                                           2)
+
+        loss_adv = tf.reduce_mean(
+            tf.nn.softmax_cross_entropy_with_logits(labels=self.one_hot_input_task, logits=logits))
+
+        return loss_adv, l2_loss + l2_loss_hidden
+
+    def hidden_layer(self, x, input_size, output_size):
+        # W = tf.Variable(tf.truncated_normal([input_size, output_size], stddev=0.1),
+        #                 name="W_hidden_layer")
+        with tf.variable_scope(name_or_scope='hidden_layer_shared', reuse=tf.AUTO_REUSE):
+            W = tf.get_variable(name="hidden_layer_W",
+                                initializer=tf.contrib.layers.xavier_initializer(),
+                                shape=[input_size, output_size])
+            print(W.name)
+            b = tf.get_variable(initializer=tf.constant(0.1, shape=[output_size]),
+                                name="hidden_layer_b")
+            l2_loss_hidden = tf.nn.l2_loss(W) + tf.nn.l2_loss(b)
+            hidden_output = self.leaky_relu(tf.nn.xw_plus_b(x, W, b, name="hidden_layer_output"))
+            return hidden_output, l2_loss_hidden
+
+    def linearLayer(self, input, input_size, output_size):
+        with tf.variable_scope(name_or_scope='linear_Layer_shared', reuse=tf.AUTO_REUSE):
+            W = tf.get_variable("linear_Layer_W",
+                                shape=[input_size, output_size],
+                                initializer=tf.contrib.layers.xavier_initializer())
+            # W = tf.Variable(tf.truncated_normal([input_size, output_size], stddev=0.1),
+            #                 name="W_linear_0")
+            b = tf.get_variable(initializer=tf.constant(0.1, shape=[output_size]),
+                                name="linear_Layer_b")
+            out_put = tf.nn.xw_plus_b(input, W, b, name="linear_Layer_output")
+            l2_loss = tf.nn.l2_loss(W) + tf.nn.l2_loss(b)
+            print(W.name)
+            return out_put, l2_loss
+
+    def extractLayer(self):
+        pooled_outputs_left, pooled_outputs_right = self.convLayer()
+        self.num_filters_total = self.num_filters * len(self.filter_sizes)
+        h_pool_left = tf.reshape(tf.concat(axis=3, values=pooled_outputs_left), [-1, self.num_filters_total],
+                                 name='h_pool_left')
+        h_pool_right = tf.reshape(tf.concat(axis=3, values=pooled_outputs_right), [-1, self.num_filters_total],
+                                  name='h_pool_right')
+
+        with tf.name_scope("similarity"):
+            W = tf.get_variable("W_similarity_base",
+                                shape=[self.num_filters_total, self.num_filters_total],
+                                initializer=tf.contrib.layers.xavier_initializer())
+            transform_left = tf.matmul(h_pool_left, W)
+            sims = tf.reduce_sum(tf.multiply(transform_left, h_pool_right), 1, keep_dims=True)
+            print(sims.name)
+
+        extract_output = tf.concat(axis=1, values=[h_pool_left, sims, h_pool_right], name='new_input')
+        return extract_output
+
+    def convLayer(self):
+        pooled_outputs_left = []
+        pooled_outputs_right = []
+        for i, filter_size in enumerate(self.filter_sizes):
+            filter_shape = [filter_size, self.embedding_size, 1, self.num_filters]
+            W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1),
+                            name="W-%s" % filter_size)
+            b = tf.Variable(tf.constant(0.1, shape=[self.num_filters]), name="b-%s" % filter_size)
+            with tf.name_scope("conv-maxpool-left-%s" % filter_size):
+                conv = tf.nn.conv2d(self.embedded_chars_left, W, strides=[1, 1, 1, 1], padding="VALID", name="conv")
+                h = self.leaky_relu(tf.nn.bias_add(conv, b))  # conv: [batch_size, 20-2+1, 1, out_channels]
+                pooled = tf.nn.max_pool(h,
+                                        ksize=[1, self.max_len - filter_size + 1, 1, 1],
+                                        strides=[1, 1, 1, 1],
+                                        padding='VALID',
+                                        name="pool")  # pooled: [batch_size, 1, 1, out_channels]
+                pooled_outputs_left.append(pooled)
+            with tf.name_scope("conv-maxpool-right-%s" % filter_size):
+                conv = tf.nn.conv2d(self.embedded_chars_right, W, strides=[1, 1, 1, 1], padding="VALID", name="conv")
+                h = self.leaky_relu(tf.nn.bias_add(conv, b))
+                pooled = tf.nn.max_pool(h,
+                                        ksize=[1, self.max_len - filter_size + 1, 1, 1],
+                                        strides=[1, 1, 1, 1],
+                                        padding='VALID',
+                                        name="pool")
+                pooled_outputs_right.append(pooled)
+        print(W.name)
+        return pooled_outputs_left, pooled_outputs_right
 
     def lookupLayer(self, fix_word_vec, word_vocab, vocab_size):
         with tf.device('/cpu:0'), tf.name_scope("embedding"):
@@ -109,54 +174,25 @@ class Base_model(object):
             embedded_chars_right = tf.expand_dims(tf.nn.embedding_lookup(W, self.input_right), -1)
         return embedded_chars_left, embedded_chars_right
 
-    # def linearLayer(self, input, input_size, output_size):
-    #     W = tf.Variable(tf.truncated_normal([input_size, output_size], stddev=0.1),
-    #                     name="W_linear")
-    #     b = tf.Variable(tf.constant(0.1, shape=[output_size]), name="b_linear")
-    #     out_put = tf.nn.xw_plus_b(input, W, b, name="output_linear")
-    #     l2_loss = tf.nn.l2_loss(W) + tf.nn.l2_loss(b)
-    #     print(W.name)
-    #     return out_put, l2_loss
-    #
-    # def leaky_relu(self, x, leak=0.2):
-    #     f1 = 0.5 * (1 + leak)
-    #     f2 = 0.5 * (1 - leak)
-    #     return f1 * x + f2 * tf.abs(x)
-    #
-    # def general_loss(self, logits, labels):
-    #     scores = tf.matmul(logits, tf.constant([0, 1], shape=[2, 1], dtype=tf.float32))
-    #     labels2 = tf.matmul(labels, tf.constant([0, 1], shape=[2, 1], dtype=tf.float32))
-    #
-    #     tmp = tf.multiply(tf.subtract(1.0, labels2), tf.square(scores))
-    #     temp2 = tf.multiply(labels2, tf.square(tf.maximum(tf.subtract(1.0, scores), 0.0)))
-    #     sum = tf.add(tmp, temp2)
-    #     return sum
+    def leaky_relu(self, x, leak=0.2):
+        f1 = 0.5 * (1 + leak)
+        f2 = 0.5 * (1 - leak)
+        return f1 * x + f2 * tf.abs(x)
 
 
 class MTLModel_0(object):
     def __init__(self, objects):
         self.objects = objects
         with tf.name_scope("MTLModel_0"):
-            # print("mtlmodel_0 shared_out: ", self.objects.shared_out.name)
+            self.loss_diff, self.general_loss, l2_loss, l2_loss_hidden = self.general_func()
 
-            self.input_y = tf.placeholder(tf.int32, [None, 1], name="input_y")
-            self.y_one_hot = tf.reshape(tf.one_hot(self.input_y, 2, axis=-1),
-                                        shape=[-1, 2])
-
-            self.input_task = 0
-            self.one_hot_input_task = tf.reshape(tf.one_hot(self.input_task, 2, axis=-1),
-                                                 shape=[1, 2])
-            self.one_hot_input_task = tf.matmul(tf.fill(tf.shape(self.input_y), 1.0),
-                                                self.one_hot_input_task)
-            self.loss_diff, self.loss, l2_loss, l2_loss_hidden = self.general_func()
-            self.loss_adv, l2_loss_adv = self.adversarial_loss(self.objects.shared_out) if self.objects.adv else 0, 0
-            self.l2_loss = l2_loss_hidden + l2_loss + l2_loss_adv
-            self.total_loss=self.loss + 0.05 * self.loss_adv + self.loss_diff + \
-                            self.objects.l2_reg_lambda * self.l2_loss
+            self.l2_loss = l2_loss_hidden + l2_loss
+            self.total_loss = self.general_loss + self.loss_diff + self.objects.l2_reg_lambda * self.l2_loss
 
     def general_func(self):
         general_out = self.extractLayer()
-        if self.objects.adv:
+        if self.objects.sharedTag:
+            print("--with shared layer--")
             general_feature = tf.concat([general_out, self.objects.shared_out], axis=1)
             general_feature, l2_loss_hidden = self.hidden_layer(x=general_feature,
                                                                 input_size=4 * self.num_filters_total + 2,
@@ -175,16 +211,23 @@ class MTLModel_0(object):
         self.general_prob = general_prob = tf.nn.softmax(general_feature_linear, name='prob')
         general_acc = self.get_acc(general_prob)
         general_losses = self.general_loss(logits=general_prob,
-                                           labels=self.y_one_hot)
+                                           labels=self.objects.input_y)
         general_loss = tf.reduce_mean(general_losses)
         self.acc = general_acc
-        loss_diff_0 = self.diff_loss(self.objects.shared_out, general_out) if self.objects.adv else 0
+        if self.objects.diff:
+            print ("has loss_diff")
+            loss_diff_0 = self.diff_loss(self.objects.shared_out, general_out)
+        else:
+            print ("no loss_diff")
+            loss_diff_0 = 0
         return loss_diff_0, general_loss, l2_loss, l2_loss_hidden
 
     def hidden_layer(self, x, input_size, output_size):
-        W = tf.get_variable(name="hidden_layer_0",
-                            initializer=tf.contrib.layers.xavier_initializer(),
-                            shape=[input_size, output_size])
+        W = tf.Variable(tf.truncated_normal([input_size, output_size], stddev=0.1),
+                        name="W_hidden_layer_0")
+        # W = tf.get_variable(name="hidden_layer_0",
+        #                     initializer=tf.contrib.layers.xavier_initializer(),
+        #                     shape=[input_size, output_size])
         print(W.name)
         b = tf.Variable(tf.constant(0.1, shape=[output_size]), name="b_layer_0")
         l2_loss_hidden = tf.nn.l2_loss(W) + tf.nn.l2_loss(b)
@@ -209,30 +252,20 @@ class MTLModel_0(object):
 
         return loss_diff
 
-    def adversarial_loss(self, shared_out):
-        shared_out = flip_gradient(shared_out)
-        feature = tf.nn.dropout(shared_out, self.objects.dropout_keep_prob, name="dropout")
-        logits, l2_loss = self.objects.linearLayer(feature,
-                                                   2 * self.objects.num_filters_total + 1,
-                                                   2)
-
-        loss_adv = tf.reduce_mean(
-            tf.nn.softmax_cross_entropy_with_logits(labels=self.one_hot_input_task, logits=logits))
-
-        return loss_adv, l2_loss
-
     def get_acc(self, prob):
         correct_predictions = tf.equal(tf.argmax(prob, 1),
-                                       tf.argmax(self.y_one_hot, 1))
+                                       tf.argmax(self.objects.input_y, 1))
         accuracy = tf.reduce_mean(tf.cast(correct_predictions, "float"), name="accuracy")
         return accuracy
 
     def linearLayer(self, input, input_size, output_size):
-        W = tf.get_variable("W_linear",
-                            shape=[input_size, output_size],
-                            initializer=tf.contrib.layers.xavier_initializer())
-        b = tf.Variable(tf.constant(0.1, shape=[output_size]), name="b_linear")
-        out_put = tf.nn.xw_plus_b(input, W, b, name="output_linear")
+        # W = tf.get_variable("W_linear_0",
+        #                     shape=[input_size, output_size],
+        #                     initializer=tf.contrib.layers.xavier_initializer())
+        W = tf.Variable(tf.truncated_normal([input_size, output_size], stddev=0.1),
+                        name="W_linear_0")
+        b = tf.Variable(tf.constant(0.1, shape=[output_size]), name="b_linear_0")
+        out_put = tf.nn.xw_plus_b(input, W, b, name="output_linear_0")
         l2_loss = tf.nn.l2_loss(W) + tf.nn.l2_loss(b)
         print(W.name)
         return out_put, l2_loss
@@ -306,25 +339,22 @@ class MTLModel_1(object):
     def __init__(self, objects):
         self.objects = objects
         with tf.name_scope("MTLModel_1"):
-            # print("mtlmodel_1 shared_out: ", self.objects.shared_out.name)
-            self.input_y = tf.placeholder(tf.int32, [None, 1], name="input_y")
-            print("mtlModel1 input_y: ", self.input_y.name)
-            self.y_one_hot = tf.reshape(tf.one_hot(self.input_y, 2, axis=-1),
-                                        shape=[-1, 2])
-            self.input_task = 1
-            self.one_hot_input_task = tf.reshape(tf.one_hot(self.input_task, 2, axis=-1),
-                                                 shape=[1, 2])
-            self.one_hot_input_task = tf.matmul(tf.fill(tf.shape(self.input_y), 1.0),
-                                                self.one_hot_input_task)
-            self.loss_diff, self.loss, l2_loss, l2_loss_hidden = self.specfic_func()
-            self.loss_adv, l2_loss_adv = self.adversarial_loss(self.objects.shared_out) if self.objects.adv else 0, 0
-            self.l2_loss = l2_loss_hidden + l2_loss + l2_loss_adv
-            self.total_loss = self.loss + 0.05 * self.loss_adv + self.loss_diff + \
-                              self.objects.l2_reg_lambda * self.l2_loss
+            # self.input_task = 1
+            # self.one_hot_input_task = tf.reshape(tf.one_hot(self.input_task, 2, axis=-1),
+            #                                      shape=[1, 2])
+            # medium = tf.slice(self.objects.input_y, begin=[0, 0], size=[-1, 1])
+            # self.one_hot_input_task = tf.matmul(tf.fill(tf.shape(medium), 1.0),
+            #                                     self.one_hot_input_task)
+
+            self.loss_diff, self.specfic_loss, l2_loss, l2_loss_hidden = self.specfic_func()
+
+            self.l2_loss = l2_loss_hidden + l2_loss
+            self.total_loss = self.specfic_loss + self.loss_diff + self.objects.l2_reg_lambda * self.l2_loss
 
     def specfic_func(self):
         specfic_out = self.extractLayer()
-        if self.objects.adv:
+        if self.objects.sharedTag:
+            print("--with shared layer--")
             specfic_feature = tf.concat([specfic_out, self.objects.shared_out], axis=1)
             specfic_feature, l2_loss_hidden = self.hidden_layer(x=specfic_feature,
                                                                 input_size=4 * self.num_filters_total + 2,
@@ -344,16 +374,23 @@ class MTLModel_1(object):
         print("specfic_prob: ", specfic_prob.name)
         specfic_acc = self.get_acc(specfic_prob)
         specfic_losses = self.general_loss(logits=specfic_prob,
-                                           labels=self.y_one_hot)
+                                           labels=self.objects.input_y)
         specfic_loss = tf.reduce_mean(specfic_losses)
-        loss_diff_1 = self.diff_loss(self.objects.shared_out, specfic_out) if self.objects.adv else 0
+        if self.objects.diff:
+            print ("has loss_diff")
+            loss_diff_1 = self.diff_loss(self.objects.shared_out, specfic_out)
+        else:
+            print ("no loss_diff")
+            loss_diff_1 = 0
         self.acc = specfic_acc
         return loss_diff_1, specfic_loss, l2_loss, l2_loss_hidden
 
     def hidden_layer(self, x, input_size, output_size):
-        W = tf.get_variable(name="hidden_layer_1",
-                            initializer=tf.contrib.layers.xavier_initializer(),
-                            shape=[input_size, output_size])
+        W = tf.Variable(tf.truncated_normal([input_size, output_size], stddev=0.1),
+                        name="W_hidden_layer_1")
+        # W = tf.get_variable(name="hidden_layer_1",
+        #                     initializer=tf.contrib.layers.xavier_initializer(),
+        #                     shape=[input_size, output_size])
         print(W.name)
         b = tf.Variable(tf.constant(0.1, shape=[output_size]), name="b_layer_1")
         l2_loss_hidden = tf.nn.l2_loss(W) + tf.nn.l2_loss(b)
@@ -378,28 +415,15 @@ class MTLModel_1(object):
 
         return loss_diff
 
-    def adversarial_loss(self, shared_out):
-        shared_out = flip_gradient(shared_out)
-        feature = tf.nn.dropout(shared_out, self.objects.dropout_keep_prob, name="dropout")
-
-        logits, l2_loss = self.objects.linearLayer(feature,
-                                                   2 * self.objects.num_filters_total + 1,
-                                                   2)
-
-        loss_adv = tf.reduce_mean(
-            tf.nn.softmax_cross_entropy_with_logits(labels=self.one_hot_input_task, logits=logits))
-
-        return loss_adv, l2_loss
-
     def get_acc(self, prob):
         correct_predictions = tf.equal(tf.argmax(prob, 1),
-                                       tf.argmax(self.y_one_hot, 1))
+                                       tf.argmax(self.objects.input_y, 1))
         accuracy = tf.reduce_mean(tf.cast(correct_predictions, "float"), name="accuracy")
         return accuracy
 
     def linearLayer(self, input, input_size, output_size):
         W = tf.Variable(tf.truncated_normal([input_size, output_size], stddev=0.1),
-                        name="W_linear")
+                        name="W_linear_1")
         b = tf.Variable(tf.constant(0.1, shape=[output_size]), name="b_linear")
         out_put = tf.nn.xw_plus_b(input, W, b, name="output_linear")
         l2_loss = tf.nn.l2_loss(W) + tf.nn.l2_loss(b)
@@ -469,9 +493,6 @@ class MTLModel_1(object):
                 pooled_outputs_right.append(pooled)
         print(W.name)
         return pooled_outputs_left, pooled_outputs_right
-
-
-
 
 
 class FlipGradientBuilder(object):

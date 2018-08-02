@@ -14,6 +14,7 @@ import tensorflow as tf
 from vocab_utils import Vocab
 from gene_tfrecords import Prepare
 import task_model
+from rank import Ranking
 
 
 def main_func(_):
@@ -45,7 +46,9 @@ def main_func(_):
         totalLines_test = prepare.processTFrecords_test_hasDone(test_path=test_path, taskNumber=1)
     else:
         print("3. Start generating TFrecords File--test...")
-        totalLines_test = prepare.processTFrecords_test(wordVocab, savePath=save_path, test_path=test_path,
+        totalLines_test = prepare.processTFrecords_test(wordVocab,
+                                                        savePath=save_path,
+                                                        test_path=test_path,
                                                         max_len=FLAGS.max_len,
                                                         taskNumber=1)
     print("totalLines_test:", totalLines_test)
@@ -59,18 +62,40 @@ def main_func(_):
     print("taskNameList: ", taskNameList)
     sys.stdout.flush()
 
+    ################
+    n = total_lines[0] / total_lines[1] + 1 if \
+        total_lines[0] % total_lines[1] != 0 else \
+        total_lines[0] / total_lines[1]
+    print("n: ", n)
+    num_batches_per_epoch_train_0 = int(total_lines[0] / FLAGS.batch_size) + 1 if \
+        total_lines[0] % FLAGS.batch_size != 0 else int(
+        total_lines[0] / FLAGS.batch_size)
+    print("batch_numbers_train_0:", num_batches_per_epoch_train_0)
+    batch_size_1 = FLAGS.batch_size / n
+
+    num_batches_per_epoch_test = int(totalLines_test / FLAGS.batch_size) + 1 if \
+        totalLines_test % FLAGS.batch_size != 0 else \
+        int(totalLines_test / FLAGS.batch_size)
+    print("batch_numbers_test:", num_batches_per_epoch_test)
+
     with tf.Graph().as_default():
         all_test = prepare.read_records(
-            tasknameList=[save_path + "test-0.tfrecords"],
+            taskname=save_path + "test-0.tfrecords",
             max_len=FLAGS.max_len,
             epochs=FLAGS.num_epochs,
             batch_size=FLAGS.batch_size)
 
-        all_train = prepare.read_records(
-            tasknameList=taskNameList,
+        all_train_0 = prepare.read_records(
+            taskname=taskNameList[0],
             max_len=FLAGS.max_len,
             epochs=FLAGS.num_epochs,
             batch_size=FLAGS.batch_size)
+
+        all_train_1 = prepare.read_records(
+            taskname=taskNameList[1],
+            max_len=FLAGS.max_len,
+            epochs=FLAGS.num_epochs,
+            batch_size=batch_size_1)
 
         print("Loading Model...")
         sys.stdout.flush()
@@ -83,37 +108,46 @@ def main_func(_):
         with sess.as_default():
             print("------------train model--------------")
             print("---base model---")
-            base_model = task_model.Base_model(
-                max_len=FLAGS.max_len,
-                vocab_size=len(wordVocab.word2id),
-                embedding_size=FLAGS.embedding_dim,
-                filter_sizes=list(map(int, FLAGS.filter_sizes.split(","))),
-                num_filters=FLAGS.num_filters,
-                num_hidden=FLAGS.num_hidden,
-                fix_word_vec=FLAGS.fix_word_vec,
-                word_vocab=wordVocab,
-                l2_reg_lambda=FLAGS.l2_reg_lambda,
-                adv=FLAGS.adv)
-            if FLAGS.adv:
-                base_model.func()
-            else:
-                print("\n---without adv---")
+            with tf.variable_scope(name_or_scope='base', reuse=None):
+                base_model = task_model.Base_model(
+                    max_len=FLAGS.max_len,
+                    vocab_size=len(wordVocab.word2id),
+                    embedding_size=FLAGS.embedding_dim,
+                    filter_sizes=list(map(int, FLAGS.filter_sizes.split(","))),
+                    num_filters=FLAGS.num_filters,
+                    num_hidden=FLAGS.num_hidden,
+                    fix_word_vec=FLAGS.fix_word_vec,
+                    word_vocab=wordVocab,
+                    l2_reg_lambda=FLAGS.l2_reg_lambda,
+                    adv=FLAGS.adv,
+                    diff=FLAGS.diff,
+                    sharedTag=FLAGS.sharedTag)
+                if FLAGS.sharedTag:
+                    print("---with shared layer---")
+                    base_model.func_shared()
+                    base_model.func_adv()
+                else:
+                    print("\n---without adv---")
 
             print("\n\n---model_0---")
-            mtlmodel_0 = task_model.MTLModel_0(base_model)
+            with tf.variable_scope(name_or_scope='mtl_0', reuse=None):
+                mtlmodel_0 = task_model.MTLModel_0(objects=base_model)
 
             print("\n\n---model_1---")
-            # mtlmodel_1 = task_model.MTLModel_1(base_model)
+            with tf.variable_scope(name_or_scope='mtl_1', reuse=None):
+                mtlmodel_1 = task_model.MTLModel_1(objects=base_model)
             print("\n\n")
 
             optimizer = tf.train.AdamOptimizer(FLAGS.learning_rate)
             global_step_0 = tf.Variable(0, name="global_step", trainable=False)
-            grads_and_vars_0 = optimizer.compute_gradients(mtlmodel_0.total_loss)
+            grads_and_vars_0 = optimizer.compute_gradients(
+                mtlmodel_0.total_loss + 0.05 * base_model.loss_adv + base_model.l2_reg_lambda * base_model.l2_loss_adv)
             train_op_0 = optimizer.apply_gradients(grads_and_vars_0, global_step=global_step_0)
 
-            # global_step_1 = tf.Variable(0, name="global_step", trainable=False)
-            # grads_and_vars_1 = optimizer.compute_gradients(mtlmodel_1.total_loss)
-            # train_op_1 = optimizer.apply_gradients(grads_and_vars_1, global_step=global_step_1)
+            global_step_1 = tf.Variable(0, name="global_step", trainable=False)
+            grads_and_vars_1 = optimizer.compute_gradients(
+                mtlmodel_1.total_loss + 0.05 * base_model.loss_adv + base_model.l2_reg_lambda * base_model.l2_loss_adv)
+            train_op_1 = optimizer.apply_gradients(grads_and_vars_1, global_step=global_step_1)
 
             saver = tf.train.Saver(tf.global_variables(), max_to_keep=20)
             init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
@@ -149,14 +183,15 @@ def main_func(_):
 
                 for j in range(num_batches_per_epoch_test):
                     input_y_test_0, input_left_test_0, input_centre_test_0 = sess.run(
-                        [all_test[0][1], all_test[0][2], all_test[0][3]])
+                        [all_test[0], all_test[1], all_test[2]])
                     loss_test, accuracy_test, prob_test = sess.run(
-                        [mtlmodel_1.loss, mtlmodel_1.acc, mtlmodel_1.specfic_prob],
+                        [mtlmodel_1.total_loss, mtlmodel_1.acc, mtlmodel_1.specfic_prob],
                         feed_dict={
+                            base_model.input_task: 1,
                             base_model.input_left: input_left_test_0,
                             base_model.input_right: input_centre_test_0,
                             base_model.dropout_keep_prob: 1.0,
-                            mtlmodel_1.input_y: input_y_test_0
+                            base_model.input_y: input_y_test_0
                         })
                     losses.append(loss_test)
                     accuracies.append(accuracy_test)
@@ -175,124 +210,113 @@ def main_func(_):
 
             dev_accuracy = []
             total_train_loss = []
-            num_batches_per_epoch_train_0 = int(total_lines[0] / FLAGS.batch_size) + 1 if \
-                total_lines[0] % FLAGS.batch_size != 0 else int(
-                total_lines[0] / FLAGS.batch_size)
-            print("batch_numbers_train_0:", num_batches_per_epoch_train_0)
-            num_batches_per_epoch_train_1 = int(total_lines[1] / FLAGS.batch_size) + 1 if \
-                total_lines[1] % FLAGS.batch_size != 0 else int(
-                total_lines[1] / FLAGS.batch_size)
-            print("batch_numbers_train_1:", num_batches_per_epoch_train_1)
 
-            num_batches_per_epoch_test = int(totalLines_test / FLAGS.batch_size) + 1 if \
-                totalLines_test % FLAGS.batch_size != 0 else \
-                int(totalLines_test / FLAGS.batch_size)
-            print("batch_numbers_test:", num_batches_per_epoch_test)
-            n = total_lines[0] / total_lines[1] + 1 if \
-                total_lines[0] % total_lines[1] != 0 else \
-                total_lines[0] / total_lines[1]
-            print("n: ", n)
+            train_loss_0 = 0
+            train_loss_1 = 0
+            train_acc_0 = 0
+            train_acc_1 = 0
+            current_step_0 = 0
             current_step_1 = 0
             try:
                 while not coord.should_stop():  ## for each epoch
-                    train_loss_0 = 0
-                    train_loss_1 = 0
-                    train_acc_0 = 0
-                    train_acc_1 = 0
-                    for j in range(num_batches_per_epoch_train_0):  ## for each batch
-                        input_y_real_0, input_left_real_0, input_centre_real_0 = sess.run(
-                            [all_train[0][1], all_train[0][2], all_train[0][3]])
+                    for i in range(num_batches_per_epoch_train_0 * FLAGS.num_epochs):  ## for each batch
+                        input_y_real_0, input_left_real_0, input_centre_real_0 = sess.run([all_train_0[0],
+                                                                                           all_train_0[1],
+                                                                                           all_train_0[2]])
 
-                        _, current_step_0, loss_0, accuracy_0, prob_0 = sess.run(
-                            [train_op_0, global_step_0, mtlmodel_0.total_loss, mtlmodel_0.acc, mtlmodel_0.general_prob],
+                        _, current_step_0, loss_0, accuracy_0 = sess.run(
+                            [train_op_0, global_step_0, mtlmodel_0.total_loss, mtlmodel_0.acc],
                             feed_dict={
+                                base_model.input_task: 0,
                                 base_model.input_left: input_left_real_0,
                                 base_model.input_right: input_centre_real_0,
-                                base_model.dropout_keep_prob: FLAGS.dropout_keep_prob,
-                                mtlmodel_0.input_y: input_y_real_0
+                                base_model.input_y: input_y_real_0,
+                                base_model.dropout_keep_prob: FLAGS.dropout_keep_prob
                             })
-                        # if current_step_0 % n == 0:
-                        #     input_y_real_1, input_left_real_1, input_centre_real_1 = sess.run(
-                        #         [all_train[1][1], all_train[1][2], all_train[1][3]])
-                        #
-                        #     _, current_step_1, loss_1, accuracy_1, prob_1 = sess.run(
-                        #         [train_op_1, global_step_1, mtlmodel_1.total_loss, mtlmodel_1.acc, mtlmodel_1.specfic_prob],
-                        #         feed_dict={
-                        #             base_model.input_left: input_left_real_1,
-                        #             base_model.input_right: input_centre_real_1,
-                        #             base_model.dropout_keep_prob: FLAGS.dropout_keep_prob,
-                        #             mtlmodel_1.input_y: input_y_real_1
-                        #         })
-                        #     train_loss_1 += loss_1
-                        #     train_acc_1 += accuracy_1
-                        #     if current_step_1 % (1000 / n) == 0:
-                        #         print("----------specfic step {}, loss {}, acc {}------------".format(current_step_1,
-                        #                                                                               loss_1,
-                        #                                                                               accuracy_1))
-                        #         sys.stdout.flush()
-
                         train_acc_0 += accuracy_0
                         train_loss_0 += loss_0
-                        if current_step_0 % 1000 == 0:
-                            print("step {}, loss {}, acc {}".format(current_step_0, loss_0, accuracy_0))
+
+                        input_y_real_1, input_left_real_1, input_centre_real_1 = sess.run([all_train_1[0],
+                                                                                           all_train_1[1],
+                                                                                           all_train_1[2]])
+                        _, current_step_1, loss_1, accuracy_1 = sess.run(
+                            [train_op_1, global_step_1, mtlmodel_1.total_loss, mtlmodel_1.acc],
+                            feed_dict={
+                                base_model.input_task: 1,
+                                base_model.input_left: input_left_real_1,
+                                base_model.input_right: input_centre_real_1,
+                                base_model.input_y: input_y_real_1,
+                                base_model.dropout_keep_prob: FLAGS.dropout_keep_prob
+                            })
+                        train_loss_1 += loss_1
+                        train_acc_1 += accuracy_1
+
+                        if current_step_1 % 10000 == 0:
+                            print("step {}, loss {}, acc {}".format(current_step_0,
+                                                                    loss_0,
+                                                                    accuracy_0))
+                            print("----------specfic step {}, loss {}, acc {}------------".format(current_step_1,
+                                                                                                  loss_1,
+                                                                                                  accuracy_1))
+                            # print ("---------loss_adv {}, specfic_loss {}-----------").format(loss_adv,
+                            #                                                                   specfic_loss)
                             sys.stdout.flush()
 
-                    # train_loss_0 /= num_batches_per_epoch_train_0
-                    # train_loss_1 /= num_batches_per_epoch_train_1
-                    # train_loss = (train_loss_0 + train_loss_1) / 2
+                        if current_step_1 % num_batches_per_epoch_train_0 == 0 or \
+                                current_step_1 == num_batches_per_epoch_train_0 * FLAGS.num_epochs:
+                            train_acc_1 /= num_batches_per_epoch_train_0
+                            print("train_0: ", current_step_0 / num_batches_per_epoch_train_0,
+                                  " epoch, train_loss_0:", train_loss_0)
 
-                    train_loss = train_loss_0 + train_loss_1
-                    train_acc_0 /= num_batches_per_epoch_train_0
-                    train_acc_1 /= num_batches_per_epoch_train_1
-                    train_acc = (train_acc_0 + train_acc_1) / 2
-                    print("total: ", (current_step_0 + 1) / num_batches_per_epoch_train_0,
-                          " epoch, train_loss:", train_loss, "acc: ", train_acc)
+                            print(
+                                "train_1: ", current_step_1 / num_batches_per_epoch_train_0,
+                                " epoch, train_loss_1:", train_loss_1,
+                                "acc: ", train_acc_1)
 
-                    print("train_0: ", (current_step_0 + 1) / num_batches_per_epoch_train_0, " epoch, train_loss_0:",
-                          train_loss_0, "acc: ", train_acc_0)
+                            total_train_loss.append(train_loss_1)
+                            train_loss_1 = 0
+                            train_acc_1 = 0
+                            train_loss_0 = 0
+                            train_acc_0 = 0
+                            sys.stdout.flush()
 
-                    print("train_1: ", (current_step_1 + 1) / num_batches_per_epoch_train_1, " epoch, train_loss_1:",
-                          train_loss_1, "acc: ", train_acc_1)
+                            print("\n------------------Evaluation:-----------------------")
+                            _, accuracy = dev_whole(num_batches_per_epoch_test)
+                            dev_accuracy.append(accuracy)
 
-                    total_train_loss.append(train_loss)
-                    sys.stdout.flush()
+                            print("--------Recently dev accuracy:--------")
+                            print(dev_accuracy[-10:])
+                            print("--------Recently train_loss:------")
+                            print(total_train_loss[-10:])
+                            if overfit(dev_accuracy):
+                                print('-----Overfit!!----')
+                                break
+                            print("")
+                            sys.stdout.flush()
 
-                    continue
-                    print("\n------------------Evaluation:-----------------------")
-                    _, accuracy = dev_whole(num_batches_per_epoch_test)
-                    dev_accuracy.append(accuracy)
+                            path = saver.save(sess, checkpoint_prefix, global_step=current_step_0)
 
-                    print("--------Recently dev accuracy:--------")
-                    print(dev_accuracy[-10:])
+                            print("-------------------Saved model checkpoint to {}--------------------".format(path))
+                            sys.stdout.flush()
+                            output_graph_def = tf.graph_util.convert_variables_to_constants(sess, sess.graph_def,
+                                                                                            output_node_names=[
+                                                                                                'mtl_1/MTLModel_1/prob'])
+                            for node in output_graph_def.node:
+                                if node.op == 'RefSwitch':
+                                    node.op = 'Switch'
+                                    for index in xrange(len(node.input)):
+                                        if 'moving_' in node.input[index]:
+                                            node.input[index] = node.input[index] + '/read'
+                                elif node.op == 'AssignSub':
+                                    node.op = 'Sub'
+                                    if 'use_locking' in node.attr:
+                                        del node.attr['use_locking']
 
-                    print("--------Recently train_loss:------")
-                    print(total_train_loss[-10:])
-                    if overfit(dev_accuracy):
-                        print('-----Overfit!!----')
-                        break
-                    print("")
-                    sys.stdout.flush()
+                            with tf.gfile.GFile(FLAGS.train_dir + "runs/mtlmodel_specfic.pb", "wb") as f:
+                                f.write(output_graph_def.SerializeToString())
+                            print("%d ops in the final graph.\n" % len(output_graph_def.node))
 
-                    path = saver.save(sess, checkpoint_prefix, global_step=current_step_0)
-                    print("-------------------Saved model checkpoint to {}--------------------".format(path))
-                    sys.stdout.flush()
-                    output_graph_def = tf.graph_util.convert_variables_to_constants(sess, sess.graph_def,
-                                                                                    output_node_names=[
-                                                                                        'MTLModel_1/prob'])
-                    # for node in output_graph_def.node:
-                    #     if node.op == 'RefSwitch':
-                    #         node.op = 'Switch'
-                    #         for index in xrange(len(node.input)):
-                    #             if 'moving_' in node.input[index]:
-                    #                 node.input[index] = node.input[index] + '/read'
-                    #     elif node.op == 'AssignSub':
-                    #         node.op = 'Sub'
-                    #         if 'use_locking' in node.attr:
-                    #             del node.attr['use_locking']
 
-                    with tf.gfile.GFile(FLAGS.train_dir + "runs/model_cnn_dssm_specfic.pb", "wb") as f:
-                        f.write(output_graph_def.SerializeToString())
-                    print("%d ops in the final graph.\n" % len(output_graph_def.node))
 
 
             except tf.errors.OutOfRangeError:
@@ -311,22 +335,24 @@ if __name__ == '__main__':
     parser.add_argument("--wordvec_path", default="data/wordvec.vec", help="wordvec_path")
     parser.add_argument("--train_dir", default="./", help="Training dir root")
     parser.add_argument("--test_path", default="tfFile/test.0", help="test path")
-    parser.add_argument("--batch_size", type=int, default=64, help="Batch Size (default: 64)")
+    parser.add_argument("--batch_size", type=int, default=128, help="Batch Size (default: 64)")
     parser.add_argument("--taskNumber", type=int, default=2, help="Number of tfRecordsfile (default: 2)")
-    parser.add_argument("--num_epochs", type=int, default=10, help="Number of training epochs (default: 200)")
+    parser.add_argument("--num_epochs", type=int, default=100, help="Number of training epochs (default: 200)")
     parser.add_argument("--max_len", type=int, default=25, help="max document length of input")
     parser.add_argument("--fix_word_vec", default=True, help="fix_word_vec")
     parser.add_argument("--hasTfrecords", default=True, help="hasTfrecords")
-    parser.add_argument("--adv", default=False, help="adv")
+    parser.add_argument("--adv", default=True, help="adv")
+    parser.add_argument("--diff", default=True, help="diff")
+    parser.add_argument("--sharedTag", default=True, help="sharedTag")
 
     parser.add_argument("--embedding_dim", type=int, default=128,
                         help="Dimensionality of character embedding (default: 64)")
-    parser.add_argument("--filter_sizes", default="2,3,5,7", help="Comma-separated filter sizes (default: '2,3')")
+    parser.add_argument("--filter_sizes", default="2,3,5", help="Comma-separated filter sizes (default: '2,3')")
     parser.add_argument("--num_filters", type=int, default=100, help="Number of filters per filter size (default: 64)")
     parser.add_argument("--num_hidden", type=int, default=100, help="Number of hidden layer units (default: 100)")
     parser.add_argument("--dropout_keep_prob", type=float, default=0.5, help="Dropout keep probability (default: 0.5)")
     parser.add_argument("--l2_reg_lambda", type=float, default=1e-4, help="L2 regularizaion lambda")
-    parser.add_argument("--learning_rate", type=float, default=1e-3, help="L2 regularizaion lambda")
+    parser.add_argument("--learning_rate", type=float, default=1e-4, help="L2 regularizaion lambda")
     parser.add_argument("--allow_soft_placement", default=True, help="Allow device soft device placement")
     parser.add_argument("--log_device_placement", default=False, help="Log placement of ops on devices")
 

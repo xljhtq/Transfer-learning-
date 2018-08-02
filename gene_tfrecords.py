@@ -2,51 +2,97 @@ import tensorflow as tf
 
 
 class Prepare(object):
-    def read_records(self, tasknameList, max_len=25, epochs=1, batch_size=128):
-        all_train = []
-        for i in range(len(tasknameList)):
-            taskname = tasknameList[i]
-            train_queue = tf.train.string_input_producer([taskname], shuffle=True, num_epochs=epochs)
-            reader = tf.TFRecordReader()
-            _, serialized_example = reader.read(train_queue)
-            features = tf.parse_single_example(
-                serialized_example,
-                features={
-                    'label': tf.VarLenFeature(tf.int64),
-                    'query1': tf.VarLenFeature(tf.int64),
-                    'query2': tf.VarLenFeature(tf.int64)
+    # def read_records(self, tasknameList, max_len=25, epochs=1, batch_size=128):
+    #     all_train = []
+    #     for i in range(len(tasknameList)):
+    #         taskname = tasknameList[i]
+    #         train_queue = tf.train.string_input_producer([taskname], shuffle=False, num_epochs=1)
+    #         reader = tf.TFRecordReader()
+    #         _, serialized_example = reader.read(train_queue)
+    #         features = tf.parse_single_example(
+    #             serialized_example,
+    #             features={
+    #                 'label': tf.VarLenFeature(tf.int64),
+    #                 'query1': tf.VarLenFeature(tf.int64),
+    #                 'query2': tf.VarLenFeature(tf.int64)
+    #
+    #             })
+    #
+    #         label = tf.sparse_tensor_to_dense(features['label'])
+    #         query1 = tf.sparse_tensor_to_dense(features['query1'])
+    #         query2 = tf.sparse_tensor_to_dense(features['query2'])
+    #
+    #         label = tf.cast(label, tf.int32)
+    #         query1 = tf.cast(query1, tf.int32)
+    #         query2 = tf.cast(query2, tf.int32)
+    #
+    #         label = tf.reshape(label, [2])
+    #         query1 = tf.reshape(query1, [max_len])
+    #         query2 = tf.reshape(query2, [max_len])
+    #
+    #         if epochs > 1:
+    #             print ("tf.train.shuffle_batch")
+    #             label_batch, query1_batch_serialized, query2_batch_serialized = tf.train.shuffle_batch(
+    #                 [label, query1, query2],
+    #                 batch_size=batch_size,
+    #                 num_threads=2,
+    #                 capacity=10000 + 3 * batch_size,
+    #                 min_after_dequeue=10000)
+    #
+    #         else:
+    #             print ("tf.train.batch")
+    #             label_batch, query1_batch_serialized, query2_batch_serialized = tf.train.batch(
+    #                 [label, query1, query2],
+    #                 batch_size=batch_size,
+    #                 num_threads=2,
+    #                 capacity=10000 + 3 * batch_size)
+    #
+    #         all_train.append([i, label_batch, query1_batch_serialized, query2_batch_serialized])
+    #     return all_train
 
-                })
+    def read_records(self, taskname, max_len=25, epochs=1, batch_size=128):
+        train_queue = tf.train.string_input_producer([taskname], shuffle=False, num_epochs=epochs)
+        reader = tf.TFRecordReader()
+        _, serialized_example = reader.read(train_queue)
+        features = tf.parse_single_example(
+            serialized_example,
+            features={
+                'label': tf.VarLenFeature(tf.int64),
+                'query1': tf.VarLenFeature(tf.int64),
+                'query2': tf.VarLenFeature(tf.int64)
 
-            label = tf.sparse_tensor_to_dense(features['label'])
-            query1 = tf.sparse_tensor_to_dense(features['query1'])
-            query2 = tf.sparse_tensor_to_dense(features['query2'])
+            })
 
-            label = tf.cast(label, tf.int32)
-            query1 = tf.cast(query1, tf.int32)
-            query2 = tf.cast(query2, tf.int32)
+        label = tf.sparse_tensor_to_dense(features['label'])
+        query1 = tf.sparse_tensor_to_dense(features['query1'])
+        query2 = tf.sparse_tensor_to_dense(features['query2'])
 
-            label = tf.reshape(label, [1])
-            query1 = tf.reshape(query1, [max_len])
-            query2 = tf.reshape(query2, [max_len])
+        label = tf.cast(label, tf.int32)
+        query1 = tf.cast(query1, tf.int32)
+        query2 = tf.cast(query2, tf.int32)
 
-            if epochs > 1:
-                label_batch, query1_batch_serialized, query2_batch_serialized = tf.train.shuffle_batch(
-                    [label, query1, query2],
-                    batch_size=batch_size,
-                    num_threads=4,
-                    capacity=10000 + 8 * batch_size,
-                    min_after_dequeue=10000)
+        label = tf.reshape(label, [2])
+        query1 = tf.reshape(query1, [max_len])
+        query2 = tf.reshape(query2, [max_len])
 
-            else:
-                label_batch, query1_batch_serialized, query2_batch_serialized = tf.train.batch(
-                    [label, query1, query2],
-                    batch_size=batch_size,
-                    num_threads=4,
-                    capacity=10000 + 8 * batch_size)
+        if epochs > 10:
+            print ("tf.train.shuffle_batch")
+            label_batch, query1_batch_serialized, query2_batch_serialized = tf.train.shuffle_batch(
+                [label, query1, query2],
+                batch_size=batch_size,
+                num_threads=2,
+                capacity=10000 + 3 * batch_size,
+                min_after_dequeue=10000)
 
-            all_train.append([i, label_batch, query1_batch_serialized, query2_batch_serialized])
-        return all_train
+        else:
+            print ("tf.train.batch")
+            label_batch, query1_batch_serialized, query2_batch_serialized = tf.train.batch(
+                [label, query1, query2],
+                batch_size=batch_size,
+                num_threads=2,
+                capacity=10000 + 3 * batch_size)
+
+        return [label_batch, query1_batch_serialized, query2_batch_serialized]
 
     def processTFrecords(self, wordVocab, savePath, max_len=25, taskNumber=2):
         def pad_sentence(sentence, sequence_length=25, padding_word="<UNK/>"):
@@ -67,7 +113,7 @@ class Prepare(object):
                 line = line.strip().strip("\n").split("\t")
                 if len(line) != 3: continue
 
-                label = [int(line[0])]
+                label = [0, 1] if line[0] == "1" else [1, 0]
                 query1 = line[1]
                 query1 = pad_sentence(query1.split(" "), sequence_length=max_len)
                 query1 = wordVocab.to_index_sequenceList(query1)
@@ -112,7 +158,7 @@ class Prepare(object):
                 line = line.strip().strip("\n").split("\t")
                 if len(line) != 3: continue
 
-                label = [int(line[0])]
+                label = [0, 1] if line[0] == "1" else [1, 0]
                 query1 = line[1]
                 query1 = pad_sentence(query1.split(" "), sequence_length=max_len)
                 query1 = wordVocab.to_index_sequenceList(query1)
