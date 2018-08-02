@@ -81,9 +81,7 @@ class Base_model(object):
         return loss_adv, l2_loss + l2_loss_hidden
 
     def hidden_layer(self, x, input_size, output_size):
-        # W = tf.Variable(tf.truncated_normal([input_size, output_size], stddev=0.1),
-        #                 name="W_hidden_layer")
-        with tf.variable_scope(name_or_scope='hidden_layer_shared', reuse=tf.AUTO_REUSE):
+        with tf.variable_scope(name_or_scope='hidden_layer_shared', reuse=None):
             W = tf.get_variable(name="hidden_layer_W",
                                 initializer=tf.contrib.layers.xavier_initializer(),
                                 shape=[input_size, output_size])
@@ -95,7 +93,7 @@ class Base_model(object):
             return hidden_output, l2_loss_hidden
 
     def linearLayer(self, input, input_size, output_size):
-        with tf.variable_scope(name_or_scope='linear_Layer_shared', reuse=tf.AUTO_REUSE):
+        with tf.variable_scope(name_or_scope='linear_Layer_shared', reuse=None):
             W = tf.get_variable("linear_Layer_W",
                                 shape=[input_size, output_size],
                                 initializer=tf.contrib.layers.xavier_initializer())

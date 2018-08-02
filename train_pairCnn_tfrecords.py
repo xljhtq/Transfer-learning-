@@ -14,7 +14,6 @@ import tensorflow as tf
 from vocab_utils import Vocab
 from gene_tfrecords import Prepare
 import task_model
-from rank import Ranking
 
 
 def main_func(_):
