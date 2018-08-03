@@ -250,15 +250,13 @@ def main_func(_):
                         train_loss_1 += loss_1
                         train_acc_1 += accuracy_1
 
-                        if current_step_1 % 10000 == 0:
+                        if current_step_1 % 500 == 0:
                             print("step {}, loss {}, acc {}".format(current_step_0,
                                                                     loss_0,
                                                                     accuracy_0))
                             print("----------specfic step {}, loss {}, acc {}------------".format(current_step_1,
                                                                                                   loss_1,
                                                                                                   accuracy_1))
-                            # print ("---------loss_adv {}, specfic_loss {}-----------").format(loss_adv,
-                            #                                                                   specfic_loss)
                             sys.stdout.flush()
 
                         if current_step_1 % num_batches_per_epoch_train_0 == 0 or \
@@ -283,6 +281,7 @@ def main_func(_):
                             _, accuracy = dev_whole(num_batches_per_epoch_test)
                             dev_accuracy.append(accuracy)
 
+                            continue
                             print("--------Recently dev accuracy:--------")
                             print(dev_accuracy[-10:])
                             print("--------Recently train_loss:------")

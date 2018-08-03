@@ -185,7 +185,7 @@ class MTLModel_0(object):
             self.loss_diff, self.general_loss, l2_loss, l2_loss_hidden = self.general_func()
 
             self.l2_loss = l2_loss_hidden + l2_loss
-            self.total_loss = self.general_loss + self.loss_diff + self.objects.l2_reg_lambda * self.l2_loss
+            self.total_loss = self.general_loss + 0.01 * self.loss_diff + self.objects.l2_reg_lambda * self.l2_loss
 
     def general_func(self):
         general_out = self.extractLayer()
@@ -337,17 +337,10 @@ class MTLModel_1(object):
     def __init__(self, objects):
         self.objects = objects
         with tf.name_scope("MTLModel_1"):
-            # self.input_task = 1
-            # self.one_hot_input_task = tf.reshape(tf.one_hot(self.input_task, 2, axis=-1),
-            #                                      shape=[1, 2])
-            # medium = tf.slice(self.objects.input_y, begin=[0, 0], size=[-1, 1])
-            # self.one_hot_input_task = tf.matmul(tf.fill(tf.shape(medium), 1.0),
-            #                                     self.one_hot_input_task)
-
             self.loss_diff, self.specfic_loss, l2_loss, l2_loss_hidden = self.specfic_func()
 
             self.l2_loss = l2_loss_hidden + l2_loss
-            self.total_loss = self.specfic_loss + self.loss_diff + self.objects.l2_reg_lambda * self.l2_loss
+            self.total_loss = self.specfic_loss + 0.01 *self.loss_diff + self.objects.l2_reg_lambda * self.l2_loss
 
     def specfic_func(self):
         specfic_out = self.extractLayer()
