@@ -2,8 +2,6 @@
 import tensorflow as tf
 from base_model import *
 
-FLAGS = tf.app.flags.FLAGS
-
 TASK_NUM = 2
 
 

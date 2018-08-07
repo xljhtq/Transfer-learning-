@@ -181,10 +181,11 @@ def main_func(_):
 
             train_loss_0 = 0
             train_loss_1 = 0
-            train_loss = 0
-            train_acc = 0
-            all_loss_adv = 0
+            loss_task_0 = 0
             loss_task_1 = 0
+            adv_0 = 0
+            adv_1 = 0
+            acc_1 = 0
             count = 0
             try:
                 while not coord.should_stop():  ## for each epoch
@@ -230,9 +231,10 @@ def main_func(_):
                         #         m_train.input_right_1: input_centre_real_1,
                         #         m_train.input_y_1: input_y_real_1,
                         #     })
-                        _, loss_0, accuracy_0, loss_adv_0 = sess.run(
+                        _, loss_0, accuracy_0, loss_adv_0, loss_ce_0 = sess.run(
                             [m_train.train_ops[0],
-                             m_train.tensors[0][1], m_train.tensors[0][0], m_train.tensors[0][2]],
+                             m_train.tensors[0][1], m_train.tensors[0][0], m_train.tensors[0][2],
+                             m_train.tensors[0][3]],
                             feed_dict={
                                 m_train.input_task_0: 0,
                                 m_train.input_left_0: input_left_real_0,
@@ -244,10 +246,9 @@ def main_func(_):
                                 m_train.input_right_1: input_centre_real_1,
                                 m_train.input_y_1: input_y_real_1,
                             })
-                        all_loss_adv += loss_adv_0
-                        train_acc += accuracy_0
                         train_loss_0 += loss_0
-                        train_loss += loss_0
+                        loss_task_0 += loss_ce_0
+                        adv_0 += loss_adv_0
 
                         _, loss_1, accuracy_1, loss_adv_1, loss_ce_1 = sess.run(
                             [m_train.train_ops[1],
@@ -264,12 +265,10 @@ def main_func(_):
                                 m_train.input_right_1: input_centre_real_1,
                                 m_train.input_y_1: input_y_real_1,
                             })
-
-                        all_loss_adv += loss_adv_1
-                        train_acc += accuracy_1
                         train_loss_1 += loss_1
-                        train_loss += loss_1
                         loss_task_1 += loss_ce_1
+                        adv_1 += loss_adv_1
+                        acc_1 += accuracy_1
 
                         count += 1
                         if count % 500 == 0:
@@ -282,26 +281,25 @@ def main_func(_):
                                 count == num_batches_per_epoch_train_0 * FLAGS.num_epochs:
 
                             print("train_0: ", count / num_batches_per_epoch_train_0,
-                                  " epoch, train_loss_0:", train_loss_0)
+                                  " epoch, train_loss_0:", train_loss_0,
+                                  "loss_task_0: ", loss_task_0,
+                                  "adv_0: ", adv_0)
 
                             print(
                                 "train_1: ", count / num_batches_per_epoch_train_0,
                                 " epoch, train_loss_1: ", train_loss_1,
-                                "loss_task_1: ", loss_task_1)
-
-                            print(
-                                "all_train: ", count / num_batches_per_epoch_train_0,
-                                " epoch, train_loss:", train_loss,
-                                "acc: ", train_acc / (2 * num_batches_per_epoch_train_0),
-                                "adv_loss: ", all_loss_adv)
+                                "loss_task_1: ", loss_task_1,
+                                "adv_1: ", adv_1,
+                                "acc_1 : ", acc_1 / num_batches_per_epoch_train_0)
 
                             total_train_loss.append(train_loss_1)
-                            train_loss = 0
-                            train_acc = 0
-                            all_loss_adv = 0
                             train_loss_0 = 0
                             train_loss_1 = 0
+                            loss_task_0 = 0
                             loss_task_1 = 0
+                            adv_0 = 0
+                            adv_1 = 0
+                            acc_1 = 0
                             sys.stdout.flush()
 
                             continue
@@ -348,7 +346,7 @@ def main_func(_):
                 print("Done")
             finally:
                 print("--------------------------finally---------------------------")
-                print("current_step:", current_step_0)
+                print("current_step:", count)
                 coord.request_stop()
                 coord.join(threads)
 
@@ -362,22 +360,20 @@ if __name__ == '__main__':
     parser.add_argument("--test_path", default="tfFile/test.0", help="test path")
     parser.add_argument("--batch_size", type=int, default=128, help="Batch Size (default: 64)")
     parser.add_argument("--taskNumber", type=int, default=2, help="Number of tfRecordsfile (default: 2)")
-    parser.add_argument("--num_epochs", type=int, default=100, help="Number of training epochs (default: 200)")
+    parser.add_argument("--num_epochs", type=int, default=200, help="Number of training epochs (default: 200)")
     parser.add_argument("--max_len", type=int, default=25, help="max document length of input")
     parser.add_argument("--fix_word_vec", default=True, help="fix_word_vec")
     parser.add_argument("--hasTfrecords", default=True, help="hasTfrecords")
     parser.add_argument("--adv", default=True, help="adv")
-    parser.add_argument("--diff", default=True, help="diff")
-    parser.add_argument("--sharedTag", default=True, help="sharedTag")
 
     parser.add_argument("--embedding_dim", type=int, default=128,
                         help="Dimensionality of character embedding (default: 64)")
-    parser.add_argument("--filter_sizes", default="2,3,5", help="Comma-separated filter sizes (default: '2,3')")
+    parser.add_argument("--filter_sizes", default="3,4,5", help="Comma-separated filter sizes (default: '2,3')")
     parser.add_argument("--num_filters", type=int, default=100, help="Number of filters per filter size (default: 64)")
     parser.add_argument("--num_hidden", type=int, default=100, help="Number of hidden layer units (default: 100)")
     parser.add_argument("--dropout_keep_prob", type=float, default=0.5, help="Dropout keep probability (default: 0.5)")
-    parser.add_argument("--l2_reg_lambda", type=float, default=1e-4, help="L2 regularizaion lambda")
-    parser.add_argument("--learning_rate", type=float, default=1e-4, help="L2 regularizaion lambda")
+    parser.add_argument("--l2_reg_lambda", type=float, default=0.0001, help="L2 regularizaion lambda")
+    parser.add_argument("--learning_rate", type=float, default=0.0001, help="L2 regularizaion lambda")
     parser.add_argument("--allow_soft_placement", default=True, help="Allow device soft device placement")
     parser.add_argument("--log_device_placement", default=False, help="Log placement of ops on devices")
 
