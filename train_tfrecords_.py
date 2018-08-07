@@ -150,19 +150,24 @@ def main_func(_):
                 losses = []
 
                 for j in range(num_batches_per_epoch_test):
-                    input_y_test_0, input_left_test_0, input_centre_test_0 = sess.run(
+                    input_y_test, input_left_test, input_centre_test = sess.run(
                         [all_test[0], all_test[1], all_test[2]])
-                    loss_test, accuracy_test, prob_test = sess.run(
-                        [mtlmodel_1.total_loss, mtlmodel_1.acc, mtlmodel_1.specfic_prob],
+                    loss, accuracy, loss_adv, loss_ce = sess.run(
+                        [m_train.tensors[1][1], m_train.tensors[1][0], m_train.tensors[1][2],
+                         m_train.tensors[1][3]],
                         feed_dict={
-                            base_model.input_task: 1,
-                            base_model.input_left: input_left_test_0,
-                            base_model.input_right: input_centre_test_0,
-                            base_model.dropout_keep_prob: 1.0,
-                            base_model.input_y: input_y_test_0
+                            m_train.input_task_0: 0,
+                            m_train.input_left_0: input_left_real_0,
+                            m_train.input_right_0: input_centre_real_0,
+                            m_train.input_y_0: input_y_real_0,
+                            m_train.dropout_keep_prob: FLAGS.dropout_keep_prob,
+                            m_train.input_task_1: 1,
+                            m_train.input_left_1: input_left_test,
+                            m_train.input_right_1: input_centre_test,
+                            m_train.input_y_1: input_y_test,
                         })
-                    losses.append(loss_test)
-                    accuracies.append(accuracy_test)
+                    losses.append(loss_ce)
+                    accuracies.append(accuracy)
                 # print("specfic_prob: ", prob_test)
                 sys.stdout.flush()
                 return np.mean(np.array(losses)), np.mean(np.array(accuracies))
@@ -302,7 +307,6 @@ def main_func(_):
                             acc_1 = 0
                             sys.stdout.flush()
 
-                            continue
                             print("\n------------------Evaluation:-----------------------")
                             _, accuracy = dev_whole(num_batches_per_epoch_test)
                             dev_accuracy.append(accuracy)
@@ -317,13 +321,14 @@ def main_func(_):
                             print("")
                             sys.stdout.flush()
 
-                            path = saver.save(sess, checkpoint_prefix, global_step=current_step_0)
+                            # continue
+                            path = saver.save(sess, checkpoint_prefix, global_step=count)
 
                             print("-------------------Saved model checkpoint to {}--------------------".format(path))
                             sys.stdout.flush()
                             output_graph_def = tf.graph_util.convert_variables_to_constants(sess, sess.graph_def,
                                                                                             output_node_names=[
-                                                                                                'mtl_1/MTLModel_1/prob'])
+                                                                                                'task_1/prob'])
                             for node in output_graph_def.node:
                                 if node.op == 'RefSwitch':
                                     node.op = 'Switch'

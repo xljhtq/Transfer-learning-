@@ -109,6 +109,9 @@ class MTLModel():
         linear = LinearLayer('linear', 2, True)
         logits, loss_l2 = linear(feature)
 
+        logits_prob = tf.nn.softmax(logits, name='prob')
+        print ("logits_prob: ",logits_prob.name)
+
         xentropy = tf.nn.softmax_cross_entropy_with_logits(
             labels=labels,
             logits=logits)
