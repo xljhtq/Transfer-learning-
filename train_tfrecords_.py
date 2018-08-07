@@ -297,7 +297,7 @@ def main_func(_):
                                 "adv_1: ", adv_1,
                                 "acc_1 : ", acc_1 / num_batches_per_epoch_train_0)
 
-                            total_train_loss.append(train_loss_1)
+                            total_train_loss.append(loss_task_1)
                             train_loss_0 = 0
                             train_loss_1 = 0
                             loss_task_0 = 0
@@ -313,7 +313,7 @@ def main_func(_):
                             print("--------Recently dev accuracy:--------")
                             print(dev_accuracy[-10:])
 
-                            print("--------Recently train_loss:------")
+                            print("--------Recently loss_task_1:------")
                             print(total_train_loss[-10:])
                             if overfit(dev_accuracy):
                                 print('-----Overfit!!----')
